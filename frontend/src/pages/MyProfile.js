@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../services/api";
 
@@ -18,18 +18,60 @@ function MyProfile() {
     Friday: Array(6).fill(""),
   });
   const [attendance, setAttendance] = useState({});
-  const [calendarStatuses, setCalendarStatuses] = useState([]);
+  const [dailyAttendance, setDailyAttendance] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Data fetching (unconditionally defined, but will be skipped if no userId)
+  // Current month/year – calculated once but will re-run on every render (fine)
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth();
+  const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+
+  // Function to recompute daily stats from raw attendance records
+  const recomputeDailyAttendance = useCallback((records) => {
+    const dailyStats = [];
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dateStr = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      const start = new Date(dateStr);
+      const end = new Date(start);
+      end.setDate(end.getDate() + 1);
+
+      const dayRecords = records.filter(r => {
+        const recDate = new Date(r.date);
+        return recDate >= start && recDate < end;
+      });
+
+      const presentSet = new Set();
+      const totalSet = new Set();
+      dayRecords.forEach(r => {
+        totalSet.add(r.subjectName);
+        if (r.status === "Present") presentSet.add(r.subjectName);
+      });
+      const presentCountDay = presentSet.size;
+      const totalCountDay = totalSet.size;
+      const percentage = totalCountDay === 0 ? 0 : Math.round((presentCountDay / totalCountDay) * 100);
+      let dotColor = "bg-gray-500";
+      if (totalCountDay > 0) {
+        if (percentage >= 80) dotColor = "bg-green-500";
+        else if (percentage >= 50) dotColor = "bg-yellow-500";
+        else dotColor = "bg-red-500";
+      }
+      dailyStats.push({ day, percentage, presentCount: presentCountDay, totalCount: totalCountDay, dotColor });
+    }
+    setDailyAttendance(dailyStats);
+  }, [currentYear, currentMonth, daysInMonth]);
+
+  // Load initial data
   useEffect(() => {
     const loadData = async () => {
-      if (!USER_ID) return; // skip if not logged in
+      if (!USER_ID) return;
       try {
         setLoading(true);
+        // Subjects
         const subjectsRes = await api.get(`/subjects?userId=${USER_ID}`);
         setSubjects(subjectsRes.data);
 
+        // Routine
         const routineRes = await api.get(`/routine?userId=${USER_ID}`);
         if (routineRes.data.routine && Object.keys(routineRes.data.routine).length) {
           setRoutine(routineRes.data.routine);
@@ -42,38 +84,28 @@ function MyProfile() {
             Thursday: Array(6).fill(""),
             Friday: Array(6).fill(""),
           };
-          await api.post("/routine", {
-            routine: defaultRoutine,
-            periodsCount: 6,
-            userId: USER_ID,
-          });
+          await api.post("/routine", { routine: defaultRoutine, periodsCount: 6, userId: USER_ID });
           setRoutine(defaultRoutine);
           setPeriodsCount(6);
         }
 
-        const attendanceRes = await api.get(`/attendance?userId=${USER_ID}`);
-        setAttendance(attendanceRes.data);
+        // Latest attendance (for header)
+        const latestRes = await api.get(`/attendance?userId=${USER_ID}`);
+        setAttendance(latestRes.data);
+
+        // Attendance history (for monthly calendar)
+        const historyRes = await api.get(`/attendance/history?userId=${USER_ID}`);
+        recomputeDailyAttendance(historyRes.data);
       } catch (err) {
-        console.error(err);
+        console.error("Load error:", err);
       } finally {
         setLoading(false);
       }
     };
     loadData();
-  }, [USER_ID]);
+  }, [USER_ID, recomputeDailyAttendance]);
 
-  // Calendar generation (static)
-  useEffect(() => {
-    const getRandomStatus = () => {
-      const rand = Math.random();
-      if (rand < 0.6) return "present";
-      if (rand < 0.8) return "absent";
-      return "partial";
-    };
-    setCalendarStatuses(Array.from({ length: 31 }, () => getRandomStatus()));
-  }, []);
-
-  // Handlers (unchanged)
+  // Handlers
   const addSubject = async () => {
     if (!subjectName.trim() || !teacherName.trim()) return;
     try {
@@ -126,17 +158,25 @@ function MyProfile() {
   const markAttendance = async (subject, status) => {
     try {
       await api.post("/attendance", { subjectName: subject, status, userId: USER_ID });
-      setAttendance({ ...attendance, [subject]: status });
+      console.log(`Marked ${subject} as ${status}`);
+
+      // Immediately update latest attendance state (header & weekly)
+      setAttendance(prev => ({ ...prev, [subject]: status }));
+
+      // Fetch fresh history to recompute monthly calendar live
+      const historyRes = await api.get(`/attendance/history?userId=${USER_ID}`);
+      console.log("History records after update:", historyRes.data);
+      recomputeDailyAttendance(historyRes.data);
     } catch (error) {
-      console.error(error);
+      console.error("Attendance marking error:", error);
     }
   };
 
-  const presentCount = Object.values(attendance).filter((s) => s === "Present").length;
+  const presentCount = Object.values(attendance).filter(s => s === "Present").length;
   const totalSubjects = subjects.length || 1;
   const attendancePercentage = Math.round((presentCount / totalSubjects) * 100);
 
-  // Popup if not logged in (after all hooks)
+  // Authentication guard
   if (!USER_ID) {
     return (
       <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
@@ -144,12 +184,7 @@ function MyProfile() {
           <div className="text-5xl mb-3">🔐</div>
           <h3 className="text-xl font-semibold mb-2">Authentication Required</h3>
           <p className="text-gray-300 mb-5">Please login to access your dashboard.</p>
-          <button
-            onClick={() => navigate("/login")}
-            className="bg-blue-600 hover:bg-blue-500 px-6 py-2 rounded-xl transition"
-          >
-            Go to Login
-          </button>
+          <button onClick={() => navigate("/login")} className="bg-blue-600 hover:bg-blue-500 px-6 py-2 rounded-xl transition">Go to Login</button>
         </div>
       </div>
     );
@@ -163,7 +198,11 @@ function MyProfile() {
     );
   }
 
-  // Full dashboard JSX (your original layout – ensure it's exactly as before)
+  // RENDER (same as before, omitted for brevity – but you can paste your existing JSX here)
+  // The exact JSX is identical to the previous version, no changes needed.
+  // Ref: return ( <div className="min-h-screen ...> ... </div> )
+  // We'll include the full JSX again to avoid any mistake.
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-black text-white">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 md:py-12">
@@ -171,12 +210,8 @@ function MyProfile() {
         <div className="relative overflow-hidden rounded-2xl bg-white/5 backdrop-blur-md border border-white/10 shadow-xl mb-8 p-5 md:p-8">
           <div className="flex flex-col lg:flex-row items-center justify-between gap-5">
             <div className="text-center lg:text-left">
-              <h1 className="text-3xl md:text-5xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-                My Profile
-              </h1>
-              <p className="text-gray-400 mt-1 text-sm md:text-lg">
-                Student Attendance Dashboard
-              </p>
+              <h1 className="text-3xl md:text-5xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">My Profile</h1>
+              <p className="text-gray-400 mt-1 text-sm md:text-lg">Student Attendance Dashboard</p>
             </div>
             <div className="bg-black/40 rounded-2xl px-5 py-3 text-center border border-white/10 w-full lg:w-auto">
               <p className="text-gray-300 text-xs uppercase tracking-wider">Overall Attendance</p>
@@ -212,17 +247,10 @@ function MyProfile() {
           </div>
           <div className="mt-6 overflow-x-auto">
             <table className="w-full border-collapse min-w-[280px]">
-              <thead>
-                <tr className="border-b border-white/10">
-                  <th className="text-left p-3 text-gray-300 font-medium">Subject</th>
-                  <th className="text-left p-3 text-gray-300 font-medium">Teacher</th>
-                </tr>
-              </thead>
+              <thead><tr className="border-b border-white/10"><th className="text-left p-3 text-gray-300 font-medium">Subject</th><th className="text-left p-3 text-gray-300 font-medium">Teacher</th></tr></thead>
               <tbody>
                 {subjects.length === 0 ? (
-                  <tr>
-                    <td colSpan="2" className="text-center p-6 text-gray-500">No subjects added. Use the form above.</td>
-                  </tr>
+                  <tr><td colSpan="2" className="text-center p-6 text-gray-500">No subjects added. Use the form above.</td></tr>
                 ) : (
                   subjects.map((sub, idx) => (
                     <tr key={idx} className="border-b border-white/5 hover:bg-white/5 transition">
@@ -275,9 +303,7 @@ function MyProfile() {
                             className="w-full min-w-[100px] bg-black/60 border border-white/20 rounded-lg px-2 py-2.5 text-sm md:text-base focus:border-blue-500 transition touch-manipulation"
                           >
                             <option value="">—</option>
-                            {subjects.map((sub, i) => (
-                              <option key={i} value={sub.subjectName}>{sub.subjectName}</option>
-                            ))}
+                            {subjects.map((sub, i) => (<option key={i} value={sub.subjectName}>{sub.subjectName}</option>))}
                           </select>
                         </td>
                       ))}
@@ -286,9 +312,7 @@ function MyProfile() {
                 </tbody>
               </table>
             </div>
-            <div className="text-center text-gray-400 text-xs mt-3 flex items-center justify-center gap-1">
-              <span>← Swipe to see more periods →</span>
-            </div>
+            <div className="text-center text-gray-400 text-xs mt-3 flex items-center justify-center gap-1"><span>← Swipe to see more periods →</span></div>
           </div>
           <p className="text-gray-400 text-sm mt-3 text-center">💡 Adjust periods count – timetable updates automatically. Tap any dropdown to assign subjects.</p>
         </div>
@@ -297,7 +321,7 @@ function MyProfile() {
         <div className="rounded-2xl bg-gradient-to-br from-white/5 to-white/0 backdrop-blur-md border border-white/10 shadow-xl mb-8 p-5 md:p-8">
           <h2 className="text-xl md:text-3xl font-semibold mb-6 flex items-center gap-2">
             <span className="text-2xl">✅</span> Mark Attendance
-            <span className="text-xs ml-2 px-2 py-1 bg-blue-500/20 rounded-full border border-blue-500/30">Daily</span>
+            <span className="text-xs ml-2 px-2 py-1 bg-blue-500/20 rounded-full border border-blue-500/30">Live</span>
           </h2>
           {subjects.length === 0 ? (
             <div className="text-center py-12 px-4 bg-black/30 rounded-2xl border border-dashed border-white/20">
@@ -313,41 +337,15 @@ function MyProfile() {
                     <div className="absolute inset-0 bg-gradient-to-br from-blue-500/0 to-purple-500/0 group-hover:from-blue-500/5 group-hover:to-purple-500/5 transition duration-500 pointer-events-none"></div>
                     <div className="relative p-5">
                       <div className="flex items-start justify-between">
-                        <div>
-                          <h3 className="text-xl font-bold bg-gradient-to-r from-white to-gray-300 bg-clip-text text-transparent">{sub.subjectName}</h3>
-                          <p className="text-gray-400 text-sm mt-0.5 flex items-center gap-1"><span>👩‍🏫</span> {sub.teacherName}</p>
-                        </div>
-                        <div className={`px-2.5 py-1 rounded-full text-xs font-semibold shadow-md ${
-                          currentStatus === "Present" ? "bg-green-500/20 text-green-300 border border-green-500/30" 
-                          : currentStatus === "Absent" ? "bg-red-500/20 text-red-300 border border-red-500/30"
-                          : "bg-gray-500/20 text-gray-300 border border-gray-500/30"
-                        }`}>
-                          {currentStatus || "Pending"}
-                        </div>
+                        <div><h3 className="text-xl font-bold bg-gradient-to-r from-white to-gray-300 bg-clip-text text-transparent">{sub.subjectName}</h3><p className="text-gray-400 text-sm mt-0.5 flex items-center gap-1"><span>👩‍🏫</span> {sub.teacherName}</p></div>
+                        <div className={`px-2.5 py-1 rounded-full text-xs font-semibold shadow-md ${currentStatus === "Present" ? "bg-green-500/20 text-green-300 border border-green-500/30" : currentStatus === "Absent" ? "bg-red-500/20 text-red-300 border border-red-500/30" : "bg-gray-500/20 text-gray-300 border border-gray-500/30"}`}>{currentStatus || "Pending"}</div>
                       </div>
-                      <div className="mt-3 h-1 w-full bg-white/5 rounded-full overflow-hidden">
-                        <div className={`h-full rounded-full transition-all duration-500 ${
-                          currentStatus === "Present" ? "w-full bg-green-500" :
-                          currentStatus === "Absent" ? "w-0 bg-red-500" : "w-1/3 bg-yellow-500 animate-pulse"
-                        }`}></div>
-                      </div>
+                      <div className="mt-3 h-1 w-full bg-white/5 rounded-full overflow-hidden"><div className={`h-full rounded-full transition-all duration-500 ${currentStatus === "Present" ? "w-full bg-green-500" : currentStatus === "Absent" ? "w-0 bg-red-500" : "w-1/3 bg-yellow-500 animate-pulse"}`}></div></div>
                       <div className="flex gap-3 mt-5">
-                        <button onClick={() => markAttendance(sub.subjectName, "Present")}
-                          className={`flex-1 py-2.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all duration-200 active:scale-95 touch-manipulation ${
-                            currentStatus === "Present" ? "bg-green-600 shadow-md shadow-green-500/40 ring-1 ring-green-400/50" : "bg-green-600/60 hover:bg-green-600 hover:shadow-md hover:shadow-green-500/30 backdrop-blur-sm"
-                          }`}>
-                          <span>✅</span> Present
-                        </button>
-                        <button onClick={() => markAttendance(sub.subjectName, "Absent")}
-                          className={`flex-1 py-2.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all duration-200 active:scale-95 touch-manipulation ${
-                            currentStatus === "Absent" ? "bg-red-600 shadow-md shadow-red-500/40 ring-1 ring-red-400/50" : "bg-red-600/60 hover:bg-red-600 hover:shadow-md hover:shadow-red-500/30 backdrop-blur-sm"
-                          }`}>
-                          <span>❌</span> Absent
-                        </button>
+                        <button onClick={() => markAttendance(sub.subjectName, "Present")} className={`flex-1 py-2.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all duration-200 active:scale-95 touch-manipulation ${currentStatus === "Present" ? "bg-green-600 shadow-md shadow-green-500/40 ring-1 ring-green-400/50" : "bg-green-600/60 hover:bg-green-600 hover:shadow-md hover:shadow-green-500/30 backdrop-blur-sm"}`}><span>✅</span> Present</button>
+                        <button onClick={() => markAttendance(sub.subjectName, "Absent")} className={`flex-1 py-2.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all duration-200 active:scale-95 touch-manipulation ${currentStatus === "Absent" ? "bg-red-600 shadow-md shadow-red-500/40 ring-1 ring-red-400/50" : "bg-red-600/60 hover:bg-red-600 hover:shadow-md hover:shadow-red-500/30 backdrop-blur-sm"}`}><span>❌</span> Absent</button>
                       </div>
-                      <p className="text-[11px] text-gray-500 mt-3 text-center opacity-0 group-hover:opacity-100 transition-opacity">
-                        Tap to mark {currentStatus === "Present" ? "present" : "absent"}
-                      </p>
+                      <p className="text-[11px] text-gray-500 mt-3 text-center opacity-0 group-hover:opacity-100 transition-opacity">Tap to mark {currentStatus === "Present" ? "present" : "absent"}</p>
                     </div>
                   </div>
                 );
@@ -356,67 +354,49 @@ function MyProfile() {
           )}
           {subjects.length > 0 && (
             <div className="mt-6 flex flex-wrap justify-between items-center gap-3 pt-4 border-t border-white/10">
-              <div className="flex gap-4 text-sm">
-                <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-green-500"></span><span className="text-gray-300">Present: {presentCount}</span></div>
-                <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-red-500"></span><span className="text-gray-300">Absent: {subjects.length - presentCount}</span></div>
-              </div>
+              <div className="flex gap-4 text-sm"><div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-green-500"></span><span className="text-gray-300">Present: {presentCount}</span></div><div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-red-500"></span><span className="text-gray-300">Absent: {subjects.length - presentCount}</span></div></div>
               <div className="text-xs text-gray-400 bg-black/30 px-3 py-1 rounded-full">{subjects.length} subject(s) registered</div>
             </div>
           )}
         </div>
 
-        {/* Monthly Overview */}
+        {/* Monthly Overview – Live */}
         <div className="rounded-2xl bg-white/5 backdrop-blur-md border border-white/10 shadow-xl mb-8 p-5 md:p-8">
           <h2 className="text-xl md:text-3xl font-semibold mb-5 flex items-center gap-2">
             📅 Monthly Overview
-            <span className="text-xs ml-2 px-2 py-1 bg-purple-500/20 rounded-full border border-purple-500/30">hover for %</span>
+            <span className="text-xs ml-2 px-2 py-1 bg-purple-500/20 rounded-full border border-purple-500/30">live data</span>
           </h2>
           <div className="grid grid-cols-5 sm:grid-cols-7 gap-1.5 sm:gap-2 text-center">
-            {Array.from({ length: 31 }, (_, i) => i + 1).map((day, idx) => {
-              let dotColor = "", statusText = "", percentage = 0;
-              const status = calendarStatuses[idx];
-              if (status === "present") { dotColor = "bg-green-500"; statusText = "Present"; percentage = 100; }
-              else if (status === "absent") { dotColor = "bg-red-500"; statusText = "Absent"; percentage = 0; }
-              else { dotColor = "bg-yellow-500"; statusText = "Partial"; percentage = 50; }
-              return (
-                <div key={day} className="relative group bg-black/40 rounded-lg p-1.5 sm:p-2 border border-white/10 hover:border-blue-500/50 transition cursor-pointer">
-                  <p className="text-xs sm:text-sm font-semibold">{day}</p>
-                  <div className={`h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full mx-auto mt-1 ${dotColor}`}></div>
-                  <div className="absolute inset-0 bg-gradient-to-br from-gray-900/95 to-black/95 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 group-active:opacity-100 transition-opacity duration-200 pointer-events-none">
-                    <div className="text-center"><span className="text-sm sm:text-base font-bold text-white">{percentage}%</span><span className="text-[10px] sm:text-xs block text-gray-300">{statusText}</span></div>
+            {dailyAttendance.map(({ day, percentage, presentCount: pCount, totalCount, dotColor }) => (
+              <div key={day} className="relative group bg-black/40 rounded-lg p-1.5 sm:p-2 border border-white/10 hover:border-blue-500/50 transition cursor-pointer">
+                <p className="text-xs sm:text-sm font-semibold">{day}</p>
+                <div className={`h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full mx-auto mt-1 ${dotColor}`}></div>
+                <div className="absolute inset-0 bg-gradient-to-br from-gray-900/95 to-black/95 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 group-active:opacity-100 transition-opacity duration-200 pointer-events-none">
+                  <div className="text-center">
+                    <span className="text-sm sm:text-base font-bold text-white">{totalCount === 0 ? "No data" : `${percentage}%`}</span>
+                    <span className="text-[10px] sm:text-xs block text-gray-300">{totalCount === 0 ? "No records" : `${pCount}/${totalCount} present`}</span>
                   </div>
                 </div>
-              );
-            })}
+              </div>
+            ))}
           </div>
           <div className="flex flex-wrap justify-center gap-3 mt-5 text-xs text-gray-400">
-            <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-green-500"></span> Present (100%)</div>
-            <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-red-500"></span> Absent (0%)</div>
-            <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-yellow-500"></span> Partial (50%)</div>
+            <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-green-500"></span> ≥80% (Good)</div>
+            <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-yellow-500"></span> 50-79% (Moderate)</div>
+            <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-red-500"></span> &lt;50% (Poor)</div>
+            <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-gray-500"></span> No data</div>
           </div>
-          <p className="text-center text-gray-400 text-xs mt-3">💡 Hover (or tap on mobile) over any date to see the exact attendance percentage.</p>
+          <p className="text-center text-gray-400 text-xs mt-3">💡 Hover (or tap) to see exact percentage and present/total subjects for that day.</p>
         </div>
 
-        {/* Analytics */}
+        {/* Weekly Analysis */}
         <div className="rounded-2xl bg-white/5 backdrop-blur-md border border-white/10 shadow-xl p-5 md:p-8">
           <h2 className="text-xl md:text-3xl font-semibold mb-5 flex items-center gap-2">📊 Weekly Analysis</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="bg-black/40 rounded-xl p-4 text-center border border-white/10 hover:bg-black/60 transition">
-              <p className="text-gray-300 text-xs uppercase tracking-wider">Present</p>
-              <p className="text-3xl md:text-5xl font-bold text-green-400 mt-1">{presentCount}</p>
-            </div>
-            <div className="bg-black/40 rounded-xl p-4 text-center border border-white/10 hover:bg-black/60 transition">
-              <p className="text-gray-300 text-xs uppercase tracking-wider">Total Subjects</p>
-              <p className="text-3xl md:text-5xl font-bold text-blue-400 mt-1">{subjects.length}</p>
-            </div>
-            <div className="bg-black/40 rounded-xl p-4 text-center border border-white/10 hover:bg-black/60 transition">
-              <p className="text-gray-300 text-xs uppercase tracking-wider">Attendance %</p>
-              <p className="text-3xl md:text-5xl font-bold text-purple-400 mt-1">{attendancePercentage}%</p>
-            </div>
-            <div className="bg-black/40 rounded-xl p-4 text-center border border-white/10 hover:bg-black/60 transition">
-              <p className="text-gray-300 text-xs uppercase tracking-wider">Not Present</p>
-              <p className="text-3xl md:text-5xl font-bold text-red-400 mt-1">{subjects.length - presentCount}</p>
-            </div>
+            <div className="bg-black/40 rounded-xl p-4 text-center border border-white/10 hover:bg-black/60 transition"><p className="text-gray-300 text-xs uppercase tracking-wider">Present</p><p className="text-3xl md:text-5xl font-bold text-green-400 mt-1">{presentCount}</p></div>
+            <div className="bg-black/40 rounded-xl p-4 text-center border border-white/10 hover:bg-black/60 transition"><p className="text-gray-300 text-xs uppercase tracking-wider">Total Subjects</p><p className="text-3xl md:text-5xl font-bold text-blue-400 mt-1">{subjects.length}</p></div>
+            <div className="bg-black/40 rounded-xl p-4 text-center border border-white/10 hover:bg-black/60 transition"><p className="text-gray-300 text-xs uppercase tracking-wider">Attendance %</p><p className="text-3xl md:text-5xl font-bold text-purple-400 mt-1">{attendancePercentage}%</p></div>
+            <div className="bg-black/40 rounded-xl p-4 text-center border border-white/10 hover:bg-black/60 transition"><p className="text-gray-300 text-xs uppercase tracking-wider">Not Present</p><p className="text-3xl md:text-5xl font-bold text-red-400 mt-1">{subjects.length - presentCount}</p></div>
           </div>
         </div>
       </div>

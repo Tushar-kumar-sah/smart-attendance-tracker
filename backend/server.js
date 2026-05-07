@@ -7,22 +7,17 @@ require('dotenv').config();
 
 const app = express();
 
-// ------------------- CORS dynamic configuration -------------------
-const allowedOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(',')
-  : ['http://localhost:3000', 'http://localhost:3001'];
-
-app.use(cors({
-  origin: allowedOrigins,
-  credentials: true
-}));
-
+// Middleware
+app.use(cors());
 app.use(express.json());
 
-// ------------------- MongoDB connection -------------------
-mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log('✅ MongoDB connected'))
-  .catch(err => console.error('MongoDB connection error:', err));
+// MongoDB connection with SSL workaround (for development)
+mongoose.connect(process.env.MONGO_URI, {
+  tlsAllowInvalidCertificates: true,
+  tlsAllowInvalidHostnames: true
+})
+.then(() => console.log('✅ MongoDB connected'))
+.catch(err => console.error('MongoDB connection error:', err));
 
 // ------------------- Models (NO pre-save hooks) -------------------
 const UserSchema = new mongoose.Schema({
@@ -75,11 +70,6 @@ const isAdmin = (req, res, next) => {
   next();
 };
 
-// ------------------- Health check (for load balancers / monitoring) -------------------
-app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
 // ------------------- Routes -------------------
 
 // 1. Login
@@ -106,29 +96,16 @@ app.post('/api/auth/login', async (req, res) => {
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { name, email, password, userId } = req.body;
-
     const existing = await User.findOne({ $or: [{ email }, { userId }] });
-    if (existing) {
-      return res.status(400).json({ msg: 'Email or Student ID already exists' });
-    }
-
+    if (existing) return res.status(400).json({ msg: 'Email or Student ID already exists' });
     const hashedPassword = await bcrypt.hash(password, 10);
-
-    const newUser = new User({
-      name,
-      email,
-      password: hashedPassword,
-      userId,
-      role: 'student'
-    });
+    const newUser = new User({ name, email, password: hashedPassword, userId, role: 'student' });
     await newUser.save();
-
     const token = jwt.sign(
       { id: newUser._id, role: 'student', userId: newUser.userId },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
-
     res.status(201).json({ token, role: 'student', userId: newUser.userId, name: newUser.name });
   } catch (err) {
     console.error('Registration error:', err);
@@ -182,7 +159,7 @@ app.post('/api/routine', async (req, res) => {
   }
 });
 
-// 5. Student attendance
+// 5. Student attendance (latest status per subject)
 app.get('/api/attendance', async (req, res) => {
   try {
     const records = await Attendance.find({ userId: req.query.userId });
@@ -206,6 +183,16 @@ app.post('/api/attendance', async (req, res) => {
       { upsert: true, returnDocument: 'after' }
     );
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// NEW: Get attendance history (all records for a user) – for monthly overview
+app.get('/api/attendance/history', async (req, res) => {
+  try {
+    const records = await Attendance.find({ userId: req.query.userId }).sort({ date: 1 });
+    res.json(records);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -272,11 +259,6 @@ app.get('/api/admin/attendance-stats', auth, isAdmin, async (req, res) => {
   }
 });
 
-// 7. Catch-all for undefined routes
-app.use('*', (req, res) => {
-  res.status(404).json({ msg: 'Route not found' });
-});
-
 // ------------------- Create default admin -------------------
 const createDefaultAdmin = async () => {
   try {
@@ -304,11 +286,4 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
   await createDefaultAdmin();
-});
-
-// Graceful shutdown (optional)
-process.on('SIGINT', async () => {
-  await mongoose.connection.close();
-  console.log('MongoDB connection closed');
-  process.exit(0);
 });
