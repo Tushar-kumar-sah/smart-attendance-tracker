@@ -1,15 +1,20 @@
 import axios from 'axios';
 
+const API_BASE_URL =
+  import.meta.env.VITE_API_URL ||
+  'https://smart-attendance-tracker-alpha-nine.vercel.app/api';
+
 const api = axios.create({
-  baseURL: 'http://localhost:5000/api', // your backend URL
+  baseURL: API_BASE_URL,
 });
 
-// Attach token to every request if it exists
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
+
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+
   return config;
 });
 
