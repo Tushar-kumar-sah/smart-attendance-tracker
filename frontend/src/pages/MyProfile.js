@@ -20,20 +20,21 @@ function MyProfile() {
   const [attendance, setAttendance] = useState({});
   const [dailyAttendance, setDailyAttendance] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState("");
 
   // Edit modal state
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [editingSubject, setEditingSubject] = useState(null);
   const [editTeacherName, setEditTeacherName] = useState("");
 
-  // Current month/year
+  // Current date for highlighting
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth();
   const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
-  const today = new Date(); // for current date highlight
+  const today = new Date();
 
-  // Compute daily stats
+  // Recompute daily stats from raw attendance records
   const recomputeDailyAttendance = useCallback((records) => {
     const dailyStats = [];
     for (let day = 1; day <= daysInMonth; day++) {
@@ -130,9 +131,13 @@ function MyProfile() {
     }
   };
 
-  // Add subject
+  // Add subject with error handling
   const addSubject = async () => {
-    if (!subjectName.trim() || !teacherName.trim()) return;
+    if (!subjectName.trim() || !teacherName.trim()) {
+      setErrorMsg("Please enter both subject and teacher name.");
+      return;
+    }
+    setErrorMsg("");
     try {
       const res = await api.post("/subjects", {
         subjectName: subjectName.trim(),
@@ -144,10 +149,11 @@ function MyProfile() {
       setTeacherName("");
     } catch (error) {
       console.error(error);
+      setErrorMsg(error.response?.data?.message || "Failed to add subject. Check network/backend.");
     }
   };
 
-  // Edit subject (teacher name only)
+  // Edit subject
   const handleEditClick = (subject) => {
     setEditingSubject(subject);
     setEditTeacherName(subject.teacherName);
@@ -164,25 +170,28 @@ function MyProfile() {
       setEditingSubject(null);
     } catch (error) {
       console.error("Update error:", error);
+      setErrorMsg("Failed to update teacher name.");
     }
   };
 
   // Delete subject
   const handleDeleteSubject = async (subject) => {
-    if (!window.confirm(`Delete subject "${subject.subjectName}"? This will remove it from routine and attendance.`)) return;
+    if (!window.confirm(`Delete subject "${subject.subjectName}"? This will remove it from routine and attendance history.`)) return;
     try {
       await api.delete(`/subjects/${subject._id}`);
-      // Remove from subjects list
       const newSubjects = subjects.filter(sub => sub._id !== subject._id);
       setSubjects(newSubjects);
-      // Remove from routine dropdowns
       await cleanRoutineForSubject(subject.subjectName, null);
-      // Remove from attendance state (local)
+      // Remove from attendance state
       const newAttendance = { ...attendance };
       delete newAttendance[subject.subjectName];
       setAttendance(newAttendance);
+      // Refresh monthly calendar to reflect removed subject's data
+      const historyRes = await api.get(`/attendance/history?userId=${USER_ID}`);
+      recomputeDailyAttendance(historyRes.data);
     } catch (error) {
       console.error("Delete error:", error);
+      setErrorMsg("Failed to delete subject.");
     }
   };
 
@@ -223,14 +232,10 @@ function MyProfile() {
   const markAttendance = async (subject, status) => {
     try {
       await api.post("/attendance", { subjectName: subject, status, userId: USER_ID });
-      console.log(`Marked ${subject} as ${status}`);
-
-      // Immediately update latest attendance state (header & weekly)
+      // Update latest attendance state
       setAttendance(prev => ({ ...prev, [subject]: status }));
-
-      // Fetch fresh history to recompute monthly calendar live
+      // Refresh monthly calendar with live data
       const historyRes = await api.get(`/attendance/history?userId=${USER_ID}`);
-      console.log("History records after update:", historyRes.data);
       recomputeDailyAttendance(historyRes.data);
     } catch (error) {
       console.error("Attendance marking error:", error);
@@ -305,6 +310,7 @@ function MyProfile() {
               + Add Subject
             </button>
           </div>
+          {errorMsg && <p className="text-red-400 text-sm mt-2">{errorMsg}</p>}
           <div className="mt-6 overflow-x-auto">
             <table className="w-full border-collapse min-w-[480px]">
               <thead>
@@ -344,7 +350,7 @@ function MyProfile() {
                   ))
                 )}
               </tbody>
-             </table>
+            </table>
           </div>
         </div>
 
@@ -373,7 +379,7 @@ function MyProfile() {
                     {Array.from({ length: periodsCount }, (_, i) => (
                       <th key={i} className="p-3 text-center border border-white/10 whitespace-nowrap">P{i+1}</th>
                     ))}
-                   </tr>
+                  </tr>
                 </thead>
                 <tbody>
                   {Object.keys(routine).map((day) => (
@@ -389,12 +395,12 @@ function MyProfile() {
                             <option value="">—</option>
                             {subjects.map((sub, i) => (<option key={i} value={sub.subjectName}>{sub.subjectName}</option>))}
                           </select>
-                         </td>
+                        </td>
                       ))}
-                     </tr>
+                    </tr>
                   ))}
                 </tbody>
-               </table>
+              </table>
             </div>
             <div className="text-center text-gray-400 text-xs mt-3 flex items-center justify-center gap-1"><span>← Swipe to see more periods →</span></div>
           </div>
@@ -452,13 +458,18 @@ function MyProfile() {
           </h2>
           <div className="grid grid-cols-5 sm:grid-cols-7 gap-1.5 sm:gap-2 text-center">
             {dailyAttendance.map(({ day, percentage, presentCount: pCount, totalCount, dotColor }) => {
-              // Highlight current date
               const isCurrentDate = (today.getFullYear() === currentYear && today.getMonth() === currentMonth && today.getDate() === day);
               return (
-                <div key={day} className={`relative group bg-black/40 rounded-lg p-1.5 sm:p-2 border border-white/10 hover:border-blue-500/50 transition cursor-pointer ${isCurrentDate ? 'ring-2 ring-blue-500 bg-blue-500/20' : ''}`}>
+                <div
+                  key={day}
+                  className={`relative group bg-black/40 rounded-lg p-1.5 sm:p-2 border border-white/10 hover:border-blue-500/50 transition cursor-pointer ${
+                    isCurrentDate ? 'ring-2 ring-blue-500 bg-blue-500/20' : ''
+                  }`}
+                >
                   <p className="text-xs sm:text-sm font-semibold">{day}</p>
                   <div className={`h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full mx-auto mt-1 ${dotColor}`}></div>
-                  <div className="absolute inset-0 bg-gradient-to-br from-gray-900/95 to-black/95 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 group-active:opacity-100 transition-opacity duration-200 pointer-events-none">
+                  {/* Hover/Tap Tooltip with live percentage */}
+                  <div className="absolute inset-0 bg-gradient-to-br from-gray-900/95 to-black/95 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 group-active:opacity-100 transition-opacity duration-200 pointer-events-none z-10">
                     <div className="text-center">
                       <span className="text-sm sm:text-base font-bold text-white">{totalCount === 0 ? "No data" : `${percentage}%`}</span>
                       <span className="text-[10px] sm:text-xs block text-gray-300">{totalCount === 0 ? "No records" : `${pCount}/${totalCount} present`}</span>
@@ -474,7 +485,7 @@ function MyProfile() {
             <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-red-500"></span> &lt;50% (Poor)</div>
             <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-gray-500"></span> No data</div>
           </div>
-          <p className="text-center text-gray-400 text-xs mt-3">💡 Hover (or tap) to see exact percentage and present/total subjects for that day. Blue ring marks today.</p>
+          <p className="text-center text-gray-400 text-xs mt-3">💡 Hover (or tap) to see live attendance percentage and present/total subjects for that day. Blue ring marks today.</p>
         </div>
 
         {/* Weekly Analysis */}
