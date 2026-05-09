@@ -21,13 +21,19 @@ function MyProfile() {
   const [dailyAttendance, setDailyAttendance] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Current month/year – calculated once but will re-run on every render (fine)
+  // Edit modal state
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editingSubject, setEditingSubject] = useState(null);
+  const [editTeacherName, setEditTeacherName] = useState("");
+
+  // Current month/year
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth();
   const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+  const today = new Date(); // for current date highlight
 
-  // Function to recompute daily stats from raw attendance records
+  // Compute daily stats
   const recomputeDailyAttendance = useCallback((records) => {
     const dailyStats = [];
     for (let day = 1; day <= daysInMonth; day++) {
@@ -105,7 +111,26 @@ function MyProfile() {
     loadData();
   }, [USER_ID, recomputeDailyAttendance]);
 
-  // Handlers
+  // Helper: clean routine when subject is deleted or renamed
+  const cleanRoutineForSubject = async (oldSubjectName, newSubjectName = null) => {
+    let updatedRoutine = { ...routine };
+    let modified = false;
+    Object.keys(updatedRoutine).forEach(day => {
+      updatedRoutine[day] = updatedRoutine[day].map(sub => {
+        if (sub === oldSubjectName) {
+          modified = true;
+          return newSubjectName !== null ? newSubjectName : "";
+        }
+        return sub;
+      });
+    });
+    if (modified) {
+      setRoutine(updatedRoutine);
+      await api.post("/routine", { routine: updatedRoutine, periodsCount, userId: USER_ID });
+    }
+  };
+
+  // Add subject
   const addSubject = async () => {
     if (!subjectName.trim() || !teacherName.trim()) return;
     try {
@@ -122,6 +147,46 @@ function MyProfile() {
     }
   };
 
+  // Edit subject (teacher name only)
+  const handleEditClick = (subject) => {
+    setEditingSubject(subject);
+    setEditTeacherName(subject.teacherName);
+    setEditModalOpen(true);
+  };
+
+  const handleUpdateSubject = async () => {
+    if (!editingSubject) return;
+    try {
+      const updatedSubject = { ...editingSubject, teacherName: editTeacherName.trim() };
+      await api.put(`/subjects/${editingSubject._id}`, updatedSubject);
+      setSubjects(subjects.map(sub => sub._id === editingSubject._id ? updatedSubject : sub));
+      setEditModalOpen(false);
+      setEditingSubject(null);
+    } catch (error) {
+      console.error("Update error:", error);
+    }
+  };
+
+  // Delete subject
+  const handleDeleteSubject = async (subject) => {
+    if (!window.confirm(`Delete subject "${subject.subjectName}"? This will remove it from routine and attendance.`)) return;
+    try {
+      await api.delete(`/subjects/${subject._id}`);
+      // Remove from subjects list
+      const newSubjects = subjects.filter(sub => sub._id !== subject._id);
+      setSubjects(newSubjects);
+      // Remove from routine dropdowns
+      await cleanRoutineForSubject(subject.subjectName, null);
+      // Remove from attendance state (local)
+      const newAttendance = { ...attendance };
+      delete newAttendance[subject.subjectName];
+      setAttendance(newAttendance);
+    } catch (error) {
+      console.error("Delete error:", error);
+    }
+  };
+
+  // Update routine
   const updateRoutine = async (day, index, value) => {
     const updatedRoutine = { ...routine };
     updatedRoutine[day][index] = value;
@@ -198,11 +263,6 @@ function MyProfile() {
     );
   }
 
-  // RENDER (same as before, omitted for brevity – but you can paste your existing JSX here)
-  // The exact JSX is identical to the previous version, no changes needed.
-  // Ref: return ( <div className="min-h-screen ...> ... </div> )
-  // We'll include the full JSX again to avoid any mistake.
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-black text-white">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 md:py-12">
@@ -220,7 +280,7 @@ function MyProfile() {
           </div>
         </div>
 
-        {/* Subjects Section */}
+        {/* Subjects Section with Edit/Delete */}
         <div className="rounded-2xl bg-white/5 backdrop-blur-md border border-white/10 shadow-xl mb-8 p-5 md:p-8">
           <h2 className="text-xl md:text-3xl font-semibold mb-5 flex items-center gap-2">📚 Subjects & Teachers</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -246,21 +306,45 @@ function MyProfile() {
             </button>
           </div>
           <div className="mt-6 overflow-x-auto">
-            <table className="w-full border-collapse min-w-[280px]">
-              <thead><tr className="border-b border-white/10"><th className="text-left p-3 text-gray-300 font-medium">Subject</th><th className="text-left p-3 text-gray-300 font-medium">Teacher</th></tr></thead>
+            <table className="w-full border-collapse min-w-[480px]">
+              <thead>
+                <tr className="border-b border-white/10">
+                  <th className="text-left p-3 text-gray-300 font-medium">Subject</th>
+                  <th className="text-left p-3 text-gray-300 font-medium">Teacher</th>
+                  <th className="text-center p-3 text-gray-300 font-medium">Actions</th>
+                 </tr>
+              </thead>
               <tbody>
                 {subjects.length === 0 ? (
-                  <tr><td colSpan="2" className="text-center p-6 text-gray-500">No subjects added. Use the form above.</td></tr>
+                  <tr>
+                    <td colSpan="3" className="text-center p-6 text-gray-500">No subjects added. Use the form above.</td>
+                  </tr>
                 ) : (
                   subjects.map((sub, idx) => (
                     <tr key={idx} className="border-b border-white/5 hover:bg-white/5 transition">
                       <td className="p-3 font-medium text-sm md:text-base">{sub.subjectName}</td>
                       <td className="p-3 text-gray-300 text-sm md:text-base">{sub.teacherName}</td>
+                      <td className="p-3 text-center">
+                        <div className="flex justify-center gap-2">
+                          <button
+                            onClick={() => handleEditClick(sub)}
+                            className="bg-yellow-600/70 hover:bg-yellow-600 text-white px-3 py-1 rounded-lg text-sm transition active:scale-95"
+                          >
+                            ✏️ Edit
+                          </button>
+                          <button
+                            onClick={() => handleDeleteSubject(sub)}
+                            className="bg-red-600/70 hover:bg-red-600 text-white px-3 py-1 rounded-lg text-sm transition active:scale-95"
+                          >
+                            🗑️ Delete
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   ))
                 )}
               </tbody>
-            </table>
+             </table>
           </div>
         </div>
 
@@ -289,7 +373,7 @@ function MyProfile() {
                     {Array.from({ length: periodsCount }, (_, i) => (
                       <th key={i} className="p-3 text-center border border-white/10 whitespace-nowrap">P{i+1}</th>
                     ))}
-                  </tr>
+                   </tr>
                 </thead>
                 <tbody>
                   {Object.keys(routine).map((day) => (
@@ -305,12 +389,12 @@ function MyProfile() {
                             <option value="">—</option>
                             {subjects.map((sub, i) => (<option key={i} value={sub.subjectName}>{sub.subjectName}</option>))}
                           </select>
-                        </td>
+                         </td>
                       ))}
-                    </tr>
+                     </tr>
                   ))}
                 </tbody>
-              </table>
+               </table>
             </div>
             <div className="text-center text-gray-400 text-xs mt-3 flex items-center justify-center gap-1"><span>← Swipe to see more periods →</span></div>
           </div>
@@ -360,25 +444,29 @@ function MyProfile() {
           )}
         </div>
 
-        {/* Monthly Overview – Live */}
+        {/* Monthly Overview – Live + Current Date Highlight */}
         <div className="rounded-2xl bg-white/5 backdrop-blur-md border border-white/10 shadow-xl mb-8 p-5 md:p-8">
           <h2 className="text-xl md:text-3xl font-semibold mb-5 flex items-center gap-2">
             📅 Monthly Overview
             <span className="text-xs ml-2 px-2 py-1 bg-purple-500/20 rounded-full border border-purple-500/30">live data</span>
           </h2>
           <div className="grid grid-cols-5 sm:grid-cols-7 gap-1.5 sm:gap-2 text-center">
-            {dailyAttendance.map(({ day, percentage, presentCount: pCount, totalCount, dotColor }) => (
-              <div key={day} className="relative group bg-black/40 rounded-lg p-1.5 sm:p-2 border border-white/10 hover:border-blue-500/50 transition cursor-pointer">
-                <p className="text-xs sm:text-sm font-semibold">{day}</p>
-                <div className={`h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full mx-auto mt-1 ${dotColor}`}></div>
-                <div className="absolute inset-0 bg-gradient-to-br from-gray-900/95 to-black/95 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 group-active:opacity-100 transition-opacity duration-200 pointer-events-none">
-                  <div className="text-center">
-                    <span className="text-sm sm:text-base font-bold text-white">{totalCount === 0 ? "No data" : `${percentage}%`}</span>
-                    <span className="text-[10px] sm:text-xs block text-gray-300">{totalCount === 0 ? "No records" : `${pCount}/${totalCount} present`}</span>
+            {dailyAttendance.map(({ day, percentage, presentCount: pCount, totalCount, dotColor }) => {
+              // Highlight current date
+              const isCurrentDate = (today.getFullYear() === currentYear && today.getMonth() === currentMonth && today.getDate() === day);
+              return (
+                <div key={day} className={`relative group bg-black/40 rounded-lg p-1.5 sm:p-2 border border-white/10 hover:border-blue-500/50 transition cursor-pointer ${isCurrentDate ? 'ring-2 ring-blue-500 bg-blue-500/20' : ''}`}>
+                  <p className="text-xs sm:text-sm font-semibold">{day}</p>
+                  <div className={`h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full mx-auto mt-1 ${dotColor}`}></div>
+                  <div className="absolute inset-0 bg-gradient-to-br from-gray-900/95 to-black/95 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 group-active:opacity-100 transition-opacity duration-200 pointer-events-none">
+                    <div className="text-center">
+                      <span className="text-sm sm:text-base font-bold text-white">{totalCount === 0 ? "No data" : `${percentage}%`}</span>
+                      <span className="text-[10px] sm:text-xs block text-gray-300">{totalCount === 0 ? "No records" : `${pCount}/${totalCount} present`}</span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
           <div className="flex flex-wrap justify-center gap-3 mt-5 text-xs text-gray-400">
             <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-green-500"></span> ≥80% (Good)</div>
@@ -386,7 +474,7 @@ function MyProfile() {
             <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-red-500"></span> &lt;50% (Poor)</div>
             <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-gray-500"></span> No data</div>
           </div>
-          <p className="text-center text-gray-400 text-xs mt-3">💡 Hover (or tap) to see exact percentage and present/total subjects for that day.</p>
+          <p className="text-center text-gray-400 text-xs mt-3">💡 Hover (or tap) to see exact percentage and present/total subjects for that day. Blue ring marks today.</p>
         </div>
 
         {/* Weekly Analysis */}
@@ -400,6 +488,37 @@ function MyProfile() {
           </div>
         </div>
       </div>
+
+      {/* Edit Subject Modal */}
+      {editModalOpen && editingSubject && (
+        <div className="fixed inset-0 flex items-center justify-center z-50 bg-black/70 backdrop-blur-sm">
+          <div className="bg-gray-900 border border-white/20 rounded-2xl p-6 w-full max-w-md mx-4 shadow-2xl">
+            <h3 className="text-2xl font-semibold mb-4">Edit Teacher</h3>
+            <div className="mb-4">
+              <label className="block text-sm text-gray-300 mb-1">Subject (read-only)</label>
+              <input
+                type="text"
+                value={editingSubject.subjectName}
+                disabled
+                className="w-full bg-black/50 border border-white/20 rounded-xl px-4 py-3 outline-none text-gray-400"
+              />
+            </div>
+            <div className="mb-6">
+              <label className="block text-sm text-gray-300 mb-1">Teacher Name</label>
+              <input
+                type="text"
+                value={editTeacherName}
+                onChange={(e) => setEditTeacherName(e.target.value)}
+                className="w-full bg-black/50 border border-white/20 rounded-xl px-4 py-3 outline-none focus:border-blue-500 transition"
+              />
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setEditModalOpen(false)} className="px-4 py-2 rounded-xl bg-gray-700 hover:bg-gray-600 transition">Cancel</button>
+              <button onClick={handleUpdateSubject} className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 transition">Update</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
