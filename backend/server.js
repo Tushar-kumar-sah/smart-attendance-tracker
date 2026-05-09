@@ -17,15 +17,17 @@ app.use(cors({
 
 app.use(express.json());
 
-// MongoDB connection with SSL workaround (for development)
-mongoose.connect(process.env.MONGO_URI, {
-  tlsAllowInvalidCertificates: true,
-  tlsAllowInvalidHostnames: true
-})
-.then(() => console.log('✅ MongoDB connected'))
-.catch(err => console.error('MongoDB connection error:', err));
+// MongoDB connection
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => {
+    console.log('✅ MongoDB connected');
+  })
+  .catch((err) => {
+    console.error('❌ MongoDB connection error:', err);
+  });
 
-// ------------------- Models (NO pre-save hooks) -------------------
+// ------------------- Models -------------------
+
 const UserSchema = new mongoose.Schema({
   name: String,
   email: String,
@@ -33,6 +35,7 @@ const UserSchema = new mongoose.Schema({
   role: String,
   userId: String
 });
+
 const User = mongoose.model('User', UserSchema);
 
 const SubjectSchema = new mongoose.Schema({
@@ -40,6 +43,7 @@ const SubjectSchema = new mongoose.Schema({
   teacherName: String,
   userId: String
 });
+
 const Subject = mongoose.model('Subject', SubjectSchema);
 
 const RoutineSchema = new mongoose.Schema({
@@ -48,6 +52,7 @@ const RoutineSchema = new mongoose.Schema({
   periodsCount: Number,
   userId: String
 });
+
 const Routine = mongoose.model('Routine', RoutineSchema);
 
 const AttendanceSchema = new mongoose.Schema({
@@ -56,9 +61,11 @@ const AttendanceSchema = new mongoose.Schema({
   date: Date,
   userId: String
 });
+
 const Attendance = mongoose.model('Attendance', AttendanceSchema);
 
 // ------------------- Authentication Middleware -------------------
+
 const auth = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
 
@@ -85,7 +92,7 @@ const isAdmin = (req, res, next) => {
 
 // ------------------- Routes -------------------
 
-// 1. Login
+// Login
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -125,7 +132,7 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// 2. Registration (student)
+// Register
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { name, email, password, userId } = req.body;
@@ -175,7 +182,7 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// 3. Student subjects
+// Subjects
 app.get('/api/subjects', async (req, res) => {
   try {
     const subjects = await Subject.find({
@@ -193,6 +200,7 @@ app.post('/api/subjects', async (req, res) => {
   try {
     const sub = new Subject(req.body);
     await sub.save();
+
     res.json(sub);
 
   } catch (err) {
@@ -200,7 +208,7 @@ app.post('/api/subjects', async (req, res) => {
   }
 });
 
-// 4. Student routine
+// Routine
 app.get('/api/routine', async (req, res) => {
   try {
     const routines = await Routine.find({
@@ -215,7 +223,10 @@ app.get('/api/routine', async (req, res) => {
       periodsCount = r.periodsCount;
     });
 
-    res.json({ routine: routineObj, periodsCount });
+    res.json({
+      routine: routineObj,
+      periodsCount
+    });
 
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -224,7 +235,9 @@ app.get('/api/routine', async (req, res) => {
 
 app.post('/api/routine', async (req, res) => {
   try {
-    await Routine.deleteMany({ userId: req.body.userId });
+    await Routine.deleteMany({
+      userId: req.body.userId
+    });
 
     for (const [day, periods] of Object.entries(req.body.routine)) {
       await Routine.create({
@@ -242,7 +255,7 @@ app.post('/api/routine', async (req, res) => {
   }
 });
 
-// 5. Student attendance
+// Attendance
 app.get('/api/attendance', async (req, res) => {
   try {
     const records = await Attendance.find({
@@ -276,7 +289,10 @@ app.post('/api/attendance', async (req, res) => {
       {
         subjectName,
         userId,
-        date: { $gte: today, $lt: tomorrow }
+        date: {
+          $gte: today,
+          $lt: tomorrow
+        }
       },
       {
         status,
@@ -295,7 +311,7 @@ app.post('/api/attendance', async (req, res) => {
   }
 });
 
-// Attendance history
+// Attendance History
 app.get('/api/attendance/history', async (req, res) => {
   try {
     const records = await Attendance.find({
@@ -309,7 +325,114 @@ app.get('/api/attendance/history', async (req, res) => {
   }
 });
 
-// ------------------- Create default admin -------------------
+// Admin Routes
+app.get('/api/admin/students', auth, isAdmin, async (req, res) => {
+  try {
+    const students = await User.find({
+      role: 'student'
+    }).select('-password');
+
+    res.json(students);
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/user-stats', auth, isAdmin, async (req, res) => {
+  try {
+    const totalUsers = await User.countDocuments();
+    const activeStudents = await User.countDocuments({
+      role: 'student'
+    });
+
+    res.json({
+      totalUsers,
+      activeStudents
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/subjects', auth, isAdmin, async (req, res) => {
+  try {
+    const subjects = await Subject.find();
+
+    res.json(subjects);
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/subjects', auth, isAdmin, async (req, res) => {
+  try {
+    const { name, teacher } = req.body;
+
+    const sub = new Subject({
+      subjectName: name,
+      teacherName: teacher,
+      userId: 'admin'
+    });
+
+    await sub.save();
+
+    res.json(sub);
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/admin/subjects/:id', auth, isAdmin, async (req, res) => {
+  try {
+    await Subject.findByIdAndDelete(req.params.id);
+
+    res.json({ success: true });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/attendance-stats', auth, isAdmin, async (req, res) => {
+  try {
+    const totalStudents = await User.countDocuments({
+      role: 'student'
+    });
+
+    const stats = await Attendance.aggregate([
+      {
+        $group: {
+          _id: '$subjectName',
+          totalPresent: {
+            $sum: {
+              $cond: [
+                { $eq: ['$status', 'Present'] },
+                1,
+                0
+              ]
+            }
+          },
+          totalRecords: { $sum: 1 }
+        }
+      }
+    ]);
+
+    res.json({
+      totalStudents,
+      attendanceRecords: stats
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ------------------- Create Default Admin -------------------
+
 const createDefaultAdmin = async () => {
   try {
     const admin = await User.findOne({
@@ -338,7 +461,8 @@ const createDefaultAdmin = async () => {
   }
 };
 
-// ------------------- Start server -------------------
+// ------------------- Start Server -------------------
+
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, async () => {
