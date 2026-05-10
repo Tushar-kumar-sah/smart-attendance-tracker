@@ -183,6 +183,7 @@ app.post('/api/auth/register', async (req, res) => {
 });
 
 // Subjects
+// Subjects
 app.get('/api/subjects', async (req, res) => {
   try {
     const subjects = await Subject.find({
@@ -208,6 +209,63 @@ app.post('/api/subjects', async (req, res) => {
   }
 });
 
+// Update subject
+app.put('/api/subjects/:id', async (req, res) => {
+  try {
+    const updatedSubject = await Subject.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true }
+    );
+
+    if (!updatedSubject) {
+      return res.status(404).json({
+        message: 'Subject not found'
+      });
+    }
+
+    res.json(updatedSubject);
+
+  } catch (err) {
+    console.error('Update subject error:', err);
+
+    res.status(500).json({
+      message: err.message
+    });
+  }
+});
+
+// Delete subject
+app.delete('/api/subjects/:id', async (req, res) => {
+  try {
+    const deletedSubject = await Subject.findByIdAndDelete(
+      req.params.id
+    );
+
+    if (!deletedSubject) {
+      return res.status(404).json({
+        message: 'Subject not found'
+      });
+    }
+
+    // Delete related attendance
+    await Attendance.deleteMany({
+      subjectName: deletedSubject.subjectName
+    });
+
+    res.json({
+      success: true,
+      message: 'Subject deleted successfully'
+    });
+
+  } catch (err) {
+    console.error('Delete subject error:', err);
+
+    res.status(500).json({
+      message: err.message
+    });
+  }
+});
 // Routine
 app.get('/api/routine', async (req, res) => {
   try {
