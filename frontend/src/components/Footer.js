@@ -21,29 +21,8 @@ function Footer() {
             </div>
           </div>
 
-          {/* Quick Links */}
-          <div>
-            <h3 className="text-white font-semibold text-lg mb-4 text-center sm:text-left">Quick Links</h3>
-            <ul className="space-y-2 text-center sm:text-left">
-              <li><a href="/dashboard" className="text-gray-400 hover:text-blue-400 transition text-sm">Dashboard</a></li>
-              <li><a href="/subjects" className="text-gray-400 hover:text-blue-400 transition text-sm">Subjects</a></li>
-              <li><a href="/routine" className="text-gray-400 hover:text-blue-400 transition text-sm">Weekly Routine</a></li>
-              <li><a href="/attendance" className="text-gray-400 hover:text-blue-400 transition text-sm">Attendance Reports</a></li>
-              <li><a href="/calendar" className="text-gray-400 hover:text-blue-400 transition text-sm">Monthly Overview</a></li>
-            </ul>
-          </div>
-
-          {/* Support */}
-          <div>
-            <h3 className="text-white font-semibold text-lg mb-4 text-center sm:text-left">Support</h3>
-            <ul className="space-y-2 text-center sm:text-left">
-              <li><a href="/help" className="text-gray-400 hover:text-blue-400 transition text-sm">Help Center</a></li>
-              <li><a href="/contact" className="text-gray-400 hover:text-blue-400 transition text-sm">Contact Us</a></li>
-              <li><a href="/privacy" className="text-gray-400 hover:text-blue-400 transition text-sm">Privacy Policy</a></li>
-              <li><a href="/terms" className="text-gray-400 hover:text-blue-400 transition text-sm">Terms of Service</a></li>
-              <li><a href="/feedback" className="text-gray-400 hover:text-blue-400 transition text-sm">Feedback</a></li>
-            </ul>
-          </div>
+         
+         
 
           {/* Newsletter / Stay Updated */}
           <div>
