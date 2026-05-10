@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../services/api";
+import { extractTextFromImage } from "../utils/ocrService";
 
 function MyProfile() {
   const USER_ID = localStorage.getItem("userId") || "";
@@ -26,6 +27,10 @@ function MyProfile() {
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [editingSubject, setEditingSubject] = useState(null);
   const [editTeacherName, setEditTeacherName] = useState("");
+
+  // OCR auto-fill state
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState(0);
 
   // Current date for highlighting
   const now = new Date();
@@ -87,17 +92,128 @@ function MyProfile() {
     }
   };
 
+  // Intelligent text parser for routine extraction
+  const parseRoutineText = (rawText, currentRoutine, currentPeriodsCount, knownSubjects) => {
+    const lines = rawText.split(/\r?\n/).filter(line => line.trim().length > 0);
+    const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+
+    let newRoutine = JSON.parse(JSON.stringify(currentRoutine));
+    let maxPeriods = currentPeriodsCount;
+
+    const findBestMatch = (word) => {
+      if (!word || word.length < 2) return null;
+      const lowerWord = word.toLowerCase();
+      let bestMatch = null;
+      let bestScore = 0;
+      for (const sub of knownSubjects) {
+        const lowerSub = sub.toLowerCase();
+        if (lowerWord === lowerSub) return sub;
+        if (lowerWord.includes(lowerSub) || lowerSub.includes(lowerWord)) {
+          const score = Math.max(lowerWord.length, lowerSub.length);
+          if (score > bestScore) {
+            bestScore = score;
+            bestMatch = sub;
+          }
+        }
+      }
+      return bestMatch;
+    };
+
+    for (const line of lines) {
+      const lowerLine = line.toLowerCase();
+      let currentDay = null;
+      for (const day of daysOfWeek) {
+        if (lowerLine.includes(day.toLowerCase())) {
+          currentDay = day;
+          break;
+        }
+      }
+      if (!currentDay) continue;
+
+      const dayIndex = lowerLine.indexOf(currentDay.toLowerCase());
+      let afterDay = line.substring(dayIndex + currentDay.length).trim();
+      afterDay = afterDay.replace(/[:|,-]/g, ' ');
+      const words = afterDay.split(/\s+/).filter(w => w.length > 0);
+
+      const daySubjects = [];
+      for (const word of words) {
+        const match = findBestMatch(word);
+        if (match && !daySubjects.includes(match)) {
+          daySubjects.push(match);
+        }
+      }
+
+      if (daySubjects.length > 0) {
+        const padded = [...daySubjects];
+        while (padded.length < maxPeriods) padded.push("");
+        if (padded.length > maxPeriods) padded.length = maxPeriods;
+        newRoutine[currentDay] = padded;
+        maxPeriods = Math.max(maxPeriods, daySubjects.length);
+      }
+    }
+
+    for (const day of daysOfWeek) {
+      if (newRoutine[day].length < maxPeriods) {
+        newRoutine[day] = [...newRoutine[day], ...Array(maxPeriods - newRoutine[day].length).fill("")];
+      } else if (newRoutine[day].length > maxPeriods) {
+        newRoutine[day] = newRoutine[day].slice(0, maxPeriods);
+      }
+    }
+
+    return { parsedRoutine: newRoutine, parsedPeriodsCount: maxPeriods };
+  };
+
+  // Handle photo upload and auto-fill
+  const handleRoutinePhotoUpload = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setUploadingPhoto(true);
+    setOcrProgress(0);
+    setErrorMsg("");
+
+    try {
+      const rawText = await extractTextFromImage(file, setOcrProgress);
+      console.log("OCR Output:", rawText);
+
+      const knownSubjects = subjects.map(s => s.subjectName);
+      const { parsedRoutine, parsedPeriodsCount } = parseRoutineText(
+        rawText,
+        routine,
+        periodsCount,
+        knownSubjects
+      );
+
+      setRoutine(parsedRoutine);
+      setPeriodsCount(parsedPeriodsCount);
+
+      await api.post("/routine", {
+        routine: parsedRoutine,
+        periodsCount: parsedPeriodsCount,
+        userId: USER_ID,
+      });
+
+      setErrorMsg("✅ Routine auto-filled from photo! You can still edit it manually.");
+      setTimeout(() => setErrorMsg(""), 3000);
+    } catch (error) {
+      console.error("Auto-fill error:", error);
+      setErrorMsg(error.message || "Failed to parse routine from image. Try a clearer photo or fill manually.");
+    } finally {
+      setUploadingPhoto(false);
+      setOcrProgress(0);
+      event.target.value = null;
+    }
+  };
+
   // Load initial data
   useEffect(() => {
     const loadData = async () => {
       if (!USER_ID) return;
       try {
         setLoading(true);
-        // Subjects
         const subjectsRes = await api.get(`/subjects?userId=${USER_ID}`);
         setSubjects(subjectsRes.data);
 
-        // Routine
         const routineRes = await api.get(`/routine?userId=${USER_ID}`);
         if (routineRes.data.routine && Object.keys(routineRes.data.routine).length) {
           setRoutine(routineRes.data.routine);
@@ -115,11 +231,9 @@ function MyProfile() {
           setPeriodsCount(6);
         }
 
-        // Latest attendance (for header)
         const latestRes = await api.get(`/attendance?userId=${USER_ID}`);
         setAttendance(latestRes.data);
 
-        // Attendance history (for monthly calendar)
         const historyRes = await api.get(`/attendance/history?userId=${USER_ID}`);
         recomputeDailyAttendance(historyRes.data);
       } catch (err) {
@@ -132,7 +246,7 @@ function MyProfile() {
     loadData();
   }, [USER_ID, recomputeDailyAttendance]);
 
-  // Add subject with error handling
+  // Add subject
   const addSubject = async () => {
     if (!subjectName.trim() || !teacherName.trim()) {
       setErrorMsg("Please enter both subject and teacher name.");
@@ -150,7 +264,7 @@ function MyProfile() {
       setTeacherName("");
     } catch (error) {
       console.error(error);
-      setErrorMsg(error.response?.data?.message || "Failed to add subject. Check network/backend.");
+      setErrorMsg(error.response?.data?.message || "Failed to add subject.");
     }
   };
 
@@ -181,34 +295,22 @@ function MyProfile() {
   const handleDeleteSubject = async (subject) => {
     if (!window.confirm(`Delete subject "${subject.subjectName}"? This will remove it from routine and attendance history.`)) return;
     setErrorMsg("");
-    
     try {
-      // First delete the subject
       await api.delete(`/subjects/${subject._id}`);
-      
-      // Update local state immediately
       const newSubjects = subjects.filter(sub => sub._id !== subject._id);
       setSubjects(newSubjects);
-      
-      // Remove from attendance state
       const newAttendance = { ...attendance };
       delete newAttendance[subject.subjectName];
       setAttendance(newAttendance);
-      
-      // Try to clean routine, but don't fail the whole operation if it errors
       try {
         await cleanRoutineForSubject(subject.subjectName, null);
       } catch (routineError) {
         console.error("Routine cleanup error:", routineError);
-        // Show a non-critical warning instead of failing the deletion
         setErrorMsg("Subject deleted, but routine may need manual cleanup.");
         setTimeout(() => setErrorMsg(""), 3000);
       }
-      
-      // Refresh monthly calendar
       const historyRes = await api.get(`/attendance/history?userId=${USER_ID}`);
       recomputeDailyAttendance(historyRes.data);
-      
     } catch (error) {
       console.error("Delete error:", error);
       setErrorMsg(error.response?.data?.message || "Failed to delete subject.");
@@ -262,9 +364,7 @@ function MyProfile() {
   const markAttendance = async (subject, status) => {
     try {
       await api.post("/attendance", { subjectName: subject, status, userId: USER_ID });
-      // Update latest attendance state
       setAttendance(prev => ({ ...prev, [subject]: status }));
-      // Refresh monthly calendar with live data
       const historyRes = await api.get(`/attendance/history?userId=${USER_ID}`);
       recomputeDailyAttendance(historyRes.data);
     } catch (error) {
@@ -317,7 +417,7 @@ function MyProfile() {
           </div>
         </div>
 
-        {/* Subjects Section with Edit/Delete */}
+        {/* Subjects Section */}
         <div className="rounded-2xl bg-white/5 backdrop-blur-md border border-white/10 shadow-xl mb-8 p-5 md:p-8">
           <h2 className="text-xl md:text-3xl font-semibold mb-5 flex items-center gap-2">📚 Subjects & Teachers</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -390,18 +490,39 @@ function MyProfile() {
         <div className="rounded-2xl bg-white/5 backdrop-blur-md border border-white/10 shadow-xl mb-8 p-5 md:p-8">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-5">
             <h2 className="text-xl md:text-3xl font-semibold flex items-center gap-2">🗓️ Weekly Routine</h2>
-            <div className="flex items-center gap-3 bg-black/30 px-4 py-2 rounded-xl">
-              <label className="text-sm text-gray-300 font-medium">Periods/day:</label>
-              <input
-                type="number"
-                min="1"
-                max="12"
-                value={periodsCount}
-                onChange={(e) => handlePeriodsCountChange(parseInt(e.target.value) || 1)}
-                className="w-16 bg-black/50 border border-white/20 rounded-lg px-3 py-2 text-center focus:border-blue-500 transition text-base touch-manipulation"
-              />
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-3 bg-black/30 px-4 py-2 rounded-xl">
+                <label className="text-sm text-gray-300 font-medium">Periods/day:</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="12"
+                  value={periodsCount}
+                  onChange={(e) => handlePeriodsCountChange(parseInt(e.target.value) || 1)}
+                  className="w-16 bg-black/50 border border-white/20 rounded-lg px-3 py-2 text-center focus:border-blue-500 transition text-base touch-manipulation"
+                />
+              </div>
+              <label className={`cursor-pointer bg-purple-600/80 hover:bg-purple-600 px-4 py-2 rounded-xl transition text-sm flex items-center gap-2 ${uploadingPhoto ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                📸 {uploadingPhoto ? `Processing (${ocrProgress}%)` : "Upload Photo & Auto-Fill"}
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={handleRoutinePhotoUpload}
+                  disabled={uploadingPhoto}
+                  className="hidden"
+                />
+              </label>
             </div>
           </div>
+          {uploadingPhoto && (
+            <div className="mb-3 text-center">
+              <span className="text-sm text-purple-300">Scanning image... {ocrProgress}%</span>
+              <div className="w-full bg-gray-700 rounded-full h-1.5 mt-1">
+                <div className="bg-purple-500 h-1.5 rounded-full transition-all duration-300" style={{ width: `${ocrProgress}%` }}></div>
+              </div>
+            </div>
+          )}
           <div className="relative">
             <div className="overflow-x-auto pb-2 -mx-1 px-1 scroll-smooth">
               <table className="min-w-[640px] md:min-w-full w-full border-collapse">
@@ -425,7 +546,9 @@ function MyProfile() {
                             className="w-full min-w-[100px] bg-black/60 border border-white/20 rounded-lg px-2 py-2.5 text-sm md:text-base focus:border-blue-500 transition touch-manipulation"
                           >
                             <option value="">—</option>
-                            {subjects.map((sub, i) => (<option key={i} value={sub.subjectName}>{sub.subjectName}</option>))}
+                            {subjects.map((sub, i) => (
+                              <option key={i} value={sub.subjectName}>{sub.subjectName}</option>
+                            ))}
                           </select>
                         </td>
                       ))}
@@ -434,7 +557,9 @@ function MyProfile() {
                 </tbody>
               </table>
             </div>
-            <div className="text-center text-gray-400 text-xs mt-3 flex items-center justify-center gap-1"><span>← Swipe to see more periods →</span></div>
+            <div className="text-center text-gray-400 text-xs mt-3 flex items-center justify-center gap-1">
+              <span>← Swipe to see more periods →</span>
+            </div>
           </div>
           <p className="text-gray-400 text-sm mt-3 text-center">💡 Adjust periods count – timetable updates automatically. Tap any dropdown to assign subjects.</p>
         </div>
@@ -459,13 +584,24 @@ function MyProfile() {
                     <div className="absolute inset-0 bg-gradient-to-br from-blue-500/0 to-purple-500/0 group-hover:from-blue-500/5 group-hover:to-purple-500/5 transition duration-500 pointer-events-none"></div>
                     <div className="relative p-5">
                       <div className="flex items-start justify-between">
-                        <div><h3 className="text-xl font-bold bg-gradient-to-r from-white to-gray-300 bg-clip-text text-transparent">{sub.subjectName}</h3><p className="text-gray-400 text-sm mt-0.5 flex items-center gap-1"><span>👩‍🏫</span> {sub.teacherName}</p></div>
-                        <div className={`px-2.5 py-1 rounded-full text-xs font-semibold shadow-md ${currentStatus === "Present" ? "bg-green-500/20 text-green-300 border border-green-500/30" : currentStatus === "Absent" ? "bg-red-500/20 text-red-300 border border-red-500/30" : "bg-gray-500/20 text-gray-300 border border-gray-500/30"}`}>{currentStatus || "Pending"}</div>
+                        <div>
+                          <h3 className="text-xl font-bold bg-gradient-to-r from-white to-gray-300 bg-clip-text text-transparent">{sub.subjectName}</h3>
+                          <p className="text-gray-400 text-sm mt-0.5 flex items-center gap-1"><span>👩‍🏫</span> {sub.teacherName}</p>
+                        </div>
+                        <div className={`px-2.5 py-1 rounded-full text-xs font-semibold shadow-md ${currentStatus === "Present" ? "bg-green-500/20 text-green-300 border border-green-500/30" : currentStatus === "Absent" ? "bg-red-500/20 text-red-300 border border-red-500/30" : "bg-gray-500/20 text-gray-300 border border-gray-500/30"}`}>
+                          {currentStatus || "Pending"}
+                        </div>
                       </div>
-                      <div className="mt-3 h-1 w-full bg-white/5 rounded-full overflow-hidden"><div className={`h-full rounded-full transition-all duration-500 ${currentStatus === "Present" ? "w-full bg-green-500" : currentStatus === "Absent" ? "w-0 bg-red-500" : "w-1/3 bg-yellow-500 animate-pulse"}`}></div></div>
+                      <div className="mt-3 h-1 w-full bg-white/5 rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full transition-all duration-500 ${currentStatus === "Present" ? "w-full bg-green-500" : currentStatus === "Absent" ? "w-0 bg-red-500" : "w-1/3 bg-yellow-500 animate-pulse"}`}></div>
+                      </div>
                       <div className="flex gap-3 mt-5">
-                        <button onClick={() => markAttendance(sub.subjectName, "Present")} className={`flex-1 py-2.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all duration-200 active:scale-95 touch-manipulation ${currentStatus === "Present" ? "bg-green-600 shadow-md shadow-green-500/40 ring-1 ring-green-400/50" : "bg-green-600/60 hover:bg-green-600 hover:shadow-md hover:shadow-green-500/30 backdrop-blur-sm"}`}><span>✅</span> Present</button>
-                        <button onClick={() => markAttendance(sub.subjectName, "Absent")} className={`flex-1 py-2.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all duration-200 active:scale-95 touch-manipulation ${currentStatus === "Absent" ? "bg-red-600 shadow-md shadow-red-500/40 ring-1 ring-red-400/50" : "bg-red-600/60 hover:bg-red-600 hover:shadow-md hover:shadow-red-500/30 backdrop-blur-sm"}`}><span>❌</span> Absent</button>
+                        <button onClick={() => markAttendance(sub.subjectName, "Present")} className={`flex-1 py-2.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all duration-200 active:scale-95 touch-manipulation ${currentStatus === "Present" ? "bg-green-600 shadow-md shadow-green-500/40 ring-1 ring-green-400/50" : "bg-green-600/60 hover:bg-green-600 hover:shadow-md hover:shadow-green-500/30 backdrop-blur-sm"}`}>
+                          <span>✅</span> Present
+                        </button>
+                        <button onClick={() => markAttendance(sub.subjectName, "Absent")} className={`flex-1 py-2.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all duration-200 active:scale-95 touch-manipulation ${currentStatus === "Absent" ? "bg-red-600 shadow-md shadow-red-500/40 ring-1 ring-red-400/50" : "bg-red-600/60 hover:bg-red-600 hover:shadow-md hover:shadow-red-500/30 backdrop-blur-sm"}`}>
+                          <span>❌</span> Absent
+                        </button>
                       </div>
                       <p className="text-[11px] text-gray-500 mt-3 text-center opacity-0 group-hover:opacity-100 transition-opacity">Tap to mark {currentStatus === "Present" ? "present" : "absent"}</p>
                     </div>
@@ -476,13 +612,22 @@ function MyProfile() {
           )}
           {subjects.length > 0 && (
             <div className="mt-6 flex flex-wrap justify-between items-center gap-3 pt-4 border-t border-white/10">
-              <div className="flex gap-4 text-sm"><div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-green-500"></span><span className="text-gray-300">Present: {presentCount}</span></div><div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-red-500"></span><span className="text-gray-300">Absent: {subjects.length - presentCount}</span></div></div>
+              <div className="flex gap-4 text-sm">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-green-500"></span>
+                  <span className="text-gray-300">Present: {presentCount}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-red-500"></span>
+                  <span className="text-gray-300">Absent: {subjects.length - presentCount}</span>
+                </div>
+              </div>
               <div className="text-xs text-gray-400 bg-black/30 px-3 py-1 rounded-full">{subjects.length} subject(s) registered</div>
             </div>
           )}
         </div>
 
-        {/* Monthly Overview – Live + Current Date Highlight */}
+        {/* Monthly Overview */}
         <div className="rounded-2xl bg-white/5 backdrop-blur-md border border-white/10 shadow-xl mb-8 p-5 md:p-8">
           <h2 className="text-xl md:text-3xl font-semibold mb-5 flex items-center gap-2">
             📅 Monthly Overview
@@ -523,10 +668,22 @@ function MyProfile() {
         <div className="rounded-2xl bg-white/5 backdrop-blur-md border border-white/10 shadow-xl p-5 md:p-8">
           <h2 className="text-xl md:text-3xl font-semibold mb-5 flex items-center gap-2">📊 Weekly Analysis</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="bg-black/40 rounded-xl p-4 text-center border border-white/10 hover:bg-black/60 transition"><p className="text-gray-300 text-xs uppercase tracking-wider">Present</p><p className="text-3xl md:text-5xl font-bold text-green-400 mt-1">{presentCount}</p></div>
-            <div className="bg-black/40 rounded-xl p-4 text-center border border-white/10 hover:bg-black/60 transition"><p className="text-gray-300 text-xs uppercase tracking-wider">Total Subjects</p><p className="text-3xl md:text-5xl font-bold text-blue-400 mt-1">{subjects.length}</p></div>
-            <div className="bg-black/40 rounded-xl p-4 text-center border border-white/10 hover:bg-black/60 transition"><p className="text-gray-300 text-xs uppercase tracking-wider">Attendance %</p><p className="text-3xl md:text-5xl font-bold text-purple-400 mt-1">{attendancePercentage}%</p></div>
-            <div className="bg-black/40 rounded-xl p-4 text-center border border-white/10 hover:bg-black/60 transition"><p className="text-gray-300 text-xs uppercase tracking-wider">Not Present</p><p className="text-3xl md:text-5xl font-bold text-red-400 mt-1">{subjects.length - presentCount}</p></div>
+            <div className="bg-black/40 rounded-xl p-4 text-center border border-white/10 hover:bg-black/60 transition">
+              <p className="text-gray-300 text-xs uppercase tracking-wider">Present</p>
+              <p className="text-3xl md:text-5xl font-bold text-green-400 mt-1">{presentCount}</p>
+            </div>
+            <div className="bg-black/40 rounded-xl p-4 text-center border border-white/10 hover:bg-black/60 transition">
+              <p className="text-gray-300 text-xs uppercase tracking-wider">Total Subjects</p>
+              <p className="text-3xl md:text-5xl font-bold text-blue-400 mt-1">{subjects.length}</p>
+            </div>
+            <div className="bg-black/40 rounded-xl p-4 text-center border border-white/10 hover:bg-black/60 transition">
+              <p className="text-gray-300 text-xs uppercase tracking-wider">Attendance %</p>
+              <p className="text-3xl md:text-5xl font-bold text-purple-400 mt-1">{attendancePercentage}%</p>
+            </div>
+            <div className="bg-black/40 rounded-xl p-4 text-center border border-white/10 hover:bg-black/60 transition">
+              <p className="text-gray-300 text-xs uppercase tracking-wider">Not Present</p>
+              <p className="text-3xl md:text-5xl font-bold text-red-400 mt-1">{subjects.length - presentCount}</p>
+            </div>
           </div>
         </div>
       </div>
