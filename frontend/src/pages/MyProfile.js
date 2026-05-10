@@ -68,6 +68,25 @@ function MyProfile() {
     setDailyAttendance(dailyStats);
   }, [currentYear, currentMonth, daysInMonth]);
 
+  // Helper: clean routine when subject is deleted or renamed
+  const cleanRoutineForSubject = async (oldSubjectName, newSubjectName = null) => {
+    let updatedRoutine = { ...routine };
+    let modified = false;
+    Object.keys(updatedRoutine).forEach(day => {
+      updatedRoutine[day] = updatedRoutine[day].map(sub => {
+        if (sub === oldSubjectName) {
+          modified = true;
+          return newSubjectName !== null ? newSubjectName : "";
+        }
+        return sub;
+      });
+    });
+    if (modified) {
+      setRoutine(updatedRoutine);
+      await api.post("/routine", { routine: updatedRoutine, periodsCount, userId: USER_ID });
+    }
+  };
+
   // Load initial data
   useEffect(() => {
     const loadData = async () => {
@@ -105,31 +124,13 @@ function MyProfile() {
         recomputeDailyAttendance(historyRes.data);
       } catch (err) {
         console.error("Load error:", err);
+        setErrorMsg("Failed to load data. Please refresh.");
       } finally {
         setLoading(false);
       }
     };
     loadData();
   }, [USER_ID, recomputeDailyAttendance]);
-
-  // Helper: clean routine when subject is deleted or renamed
-  const cleanRoutineForSubject = async (oldSubjectName, newSubjectName = null) => {
-    let updatedRoutine = { ...routine };
-    let modified = false;
-    Object.keys(updatedRoutine).forEach(day => {
-      updatedRoutine[day] = updatedRoutine[day].map(sub => {
-        if (sub === oldSubjectName) {
-          modified = true;
-          return newSubjectName !== null ? newSubjectName : "";
-        }
-        return sub;
-      });
-    });
-    if (modified) {
-      setRoutine(updatedRoutine);
-      await api.post("/routine", { routine: updatedRoutine, periodsCount, userId: USER_ID });
-    }
-  };
 
   // Add subject with error handling
   const addSubject = async () => {
@@ -155,6 +156,7 @@ function MyProfile() {
 
   // Edit subject
   const handleEditClick = (subject) => {
+    setErrorMsg("");
     setEditingSubject(subject);
     setEditTeacherName(subject.teacherName);
     setEditModalOpen(true);
@@ -162,6 +164,7 @@ function MyProfile() {
 
   const handleUpdateSubject = async () => {
     if (!editingSubject) return;
+    setErrorMsg("");
     try {
       const updatedSubject = { ...editingSubject, teacherName: editTeacherName.trim() };
       await api.put(`/subjects/${editingSubject._id}`, updatedSubject);
@@ -170,29 +173,52 @@ function MyProfile() {
       setEditingSubject(null);
     } catch (error) {
       console.error("Update error:", error);
-      setErrorMsg("Failed to update teacher name.");
+      setErrorMsg(error.response?.data?.message || "Failed to update teacher name.");
     }
   };
 
   // Delete subject
   const handleDeleteSubject = async (subject) => {
     if (!window.confirm(`Delete subject "${subject.subjectName}"? This will remove it from routine and attendance history.`)) return;
+    setErrorMsg("");
+    
     try {
+      // First delete the subject
       await api.delete(`/subjects/${subject._id}`);
+      
+      // Update local state immediately
       const newSubjects = subjects.filter(sub => sub._id !== subject._id);
       setSubjects(newSubjects);
-      await cleanRoutineForSubject(subject.subjectName, null);
+      
       // Remove from attendance state
       const newAttendance = { ...attendance };
       delete newAttendance[subject.subjectName];
       setAttendance(newAttendance);
-      // Refresh monthly calendar to reflect removed subject's data
+      
+      // Try to clean routine, but don't fail the whole operation if it errors
+      try {
+        await cleanRoutineForSubject(subject.subjectName, null);
+      } catch (routineError) {
+        console.error("Routine cleanup error:", routineError);
+        // Show a non-critical warning instead of failing the deletion
+        setErrorMsg("Subject deleted, but routine may need manual cleanup.");
+        setTimeout(() => setErrorMsg(""), 3000);
+      }
+      
+      // Refresh monthly calendar
       const historyRes = await api.get(`/attendance/history?userId=${USER_ID}`);
       recomputeDailyAttendance(historyRes.data);
+      
     } catch (error) {
       console.error("Delete error:", error);
-      setErrorMsg("Failed to delete subject.");
+      setErrorMsg(error.response?.data?.message || "Failed to delete subject.");
     }
+  };
+
+  const closeModal = () => {
+    setEditModalOpen(false);
+    setEditingSubject(null);
+    setErrorMsg("");
   };
 
   // Update routine
@@ -204,6 +230,8 @@ function MyProfile() {
       await api.post("/routine", { routine: updatedRoutine, periodsCount, userId: USER_ID });
     } catch (error) {
       console.error(error);
+      setErrorMsg("Failed to update routine.");
+      setTimeout(() => setErrorMsg(""), 3000);
     }
   };
 
@@ -226,6 +254,8 @@ function MyProfile() {
       await api.post("/routine", { routine: updatedRoutine, periodsCount: newCount, userId: USER_ID });
     } catch (error) {
       console.error(error);
+      setErrorMsg("Failed to update periods count.");
+      setTimeout(() => setErrorMsg(""), 3000);
     }
   };
 
@@ -239,6 +269,8 @@ function MyProfile() {
       recomputeDailyAttendance(historyRes.data);
     } catch (error) {
       console.error("Attendance marking error:", error);
+      setErrorMsg("Failed to mark attendance. Please try again.");
+      setTimeout(() => setErrorMsg(""), 3000);
     }
   };
 
@@ -318,7 +350,7 @@ function MyProfile() {
                   <th className="text-left p-3 text-gray-300 font-medium">Subject</th>
                   <th className="text-left p-3 text-gray-300 font-medium">Teacher</th>
                   <th className="text-center p-3 text-gray-300 font-medium">Actions</th>
-                 </tr>
+                </tr>
               </thead>
               <tbody>
                 {subjects.length === 0 ? (
@@ -468,7 +500,6 @@ function MyProfile() {
                 >
                   <p className="text-xs sm:text-sm font-semibold">{day}</p>
                   <div className={`h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full mx-auto mt-1 ${dotColor}`}></div>
-                  {/* Hover/Tap Tooltip with live percentage */}
                   <div className="absolute inset-0 bg-gradient-to-br from-gray-900/95 to-black/95 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 group-active:opacity-100 transition-opacity duration-200 pointer-events-none z-10">
                     <div className="text-center">
                       <span className="text-sm sm:text-base font-bold text-white">{totalCount === 0 ? "No data" : `${percentage}%`}</span>
@@ -524,7 +555,7 @@ function MyProfile() {
               />
             </div>
             <div className="flex gap-3 justify-end">
-              <button onClick={() => setEditModalOpen(false)} className="px-4 py-2 rounded-xl bg-gray-700 hover:bg-gray-600 transition">Cancel</button>
+              <button onClick={closeModal} className="px-4 py-2 rounded-xl bg-gray-700 hover:bg-gray-600 transition">Cancel</button>
               <button onClick={handleUpdateSubject} className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 transition">Update</button>
             </div>
           </div>
