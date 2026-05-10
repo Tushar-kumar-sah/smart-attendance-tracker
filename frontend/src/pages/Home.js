@@ -1,9 +1,7 @@
-import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 export default function Home() {
   const navigate = useNavigate();
-  const [isDemoOpen, setIsDemoOpen] = useState(false);
 
   return (
     <div className="bg-black text-white min-h-screen">
@@ -30,12 +28,6 @@ export default function Home() {
               className="bg-blue-600 hover:bg-blue-500 px-6 sm:px-8 py-3 sm:py-4 rounded-2xl font-semibold text-base sm:text-lg transition duration-300 shadow-lg shadow-blue-500/20"
             >
               Register Now
-            </button>
-            <button
-              onClick={() => setIsDemoOpen(true)}
-              className="border border-zinc-700 hover:bg-zinc-900 px-6 sm:px-8 py-3 sm:py-4 rounded-2xl text-base sm:text-lg transition duration-300"
-            >
-              Watch Demo
             </button>
           </div>
         </div>
@@ -122,38 +114,6 @@ export default function Home() {
           </div>
         </div>
       </section>
-
-      {/* DEMO MODAL */}
-      {isDemoOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-sm">
-          <div className="bg-gradient-to-br from-gray-900 to-black rounded-2xl max-w-4xl w-full border border-white/20 shadow-2xl overflow-hidden">
-            <div className="flex justify-between items-center p-4 border-b border-white/10">
-              <h3 className="text-xl font-semibold">Watch Demo</h3>
-              <button
-                onClick={() => setIsDemoOpen(false)}
-                className="text-gray-400 hover:text-white text-2xl leading-none"
-              >
-                ×
-              </button>
-            </div>
-            <div className="p-4">
-              <div className="aspect-video bg-black rounded-xl overflow-hidden">
-                <iframe
-                  className="w-full h-full"
-                  src="https://www.youtube.com/embed/dQw4w9WgXcQ?autoplay=1"
-                  title="Demo Video"
-                  frameBorder="0"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                  allowFullScreen
-                ></iframe>
-              </div>
-              <p className="text-gray-400 text-sm text-center mt-4">
-                Watch how to add subjects, manage routine, and track attendance.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
-} 
+}
